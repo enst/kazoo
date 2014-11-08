@@ -229,6 +229,7 @@ format_event(JObj, AccountId, <<"CHANNEL_DESTROY">>) ->
 base_hook_event(JObj, AccountId) ->
     base_hook_event(JObj, AccountId, []).
 base_hook_event(JObj, AccountId, Acc) ->
+    lager:debug("event ~p~n", [JObj]),
     wh_json:from_list(
       props:filter_undefined(
         [{<<"call_direction">>, wh_json:get_value(<<"Call-Direction">>, JObj)}
@@ -244,6 +245,8 @@ base_hook_event(JObj, AccountId, Acc) ->
          ,{<<"caller_id_number">>, wh_json:get_value(<<"Caller-ID-Number">>, JObj)}
          ,{<<"callee_id_name">>, wh_json:get_value(<<"Callee-ID-Name">>, JObj)}
          ,{<<"callee_id_number">>, wh_json:get_value(<<"Callee-ID-Number">>, JObj)}
+         ,{<<"queue_id">>, wh_json:get_value(<<"Queue-ID">>, wh_json:get_value(<<"Custom-Channel-Vars">>, JObj))}
+         ,{<<"agent_id">>, wh_json:get_value(<<"Agent-ID">>, wh_json:get_value(<<"Custom-Channel-Vars">>, JObj))}
          | Acc
         ])).
 
