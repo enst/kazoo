@@ -230,6 +230,12 @@ base_hook_event(JObj, AccountId) ->
     base_hook_event(JObj, AccountId, []).
 base_hook_event(JObj, AccountId, Acc) ->
     lager:debug("event ~p~n", [JObj]),
+    OtherLegCallID = case wh_json:get_value(<<"Other-Leg-Call-ID">>, JObj) of
+        'undefined' ->
+            wh_json:get_value(<<"Other-Leg-Call-ID">>, wh_json:get_value(<<"Custom-Channel-Vars">>, JObj));
+        OtherLegCallID1 ->
+            OtherLegCallID1
+    end,
     wh_json:from_list(
       props:filter_undefined(
         [{<<"call_direction">>, wh_json:get_value(<<"Call-Direction">>, JObj)}
@@ -240,7 +246,7 @@ base_hook_event(JObj, AccountId, Acc) ->
          ,{<<"from">>, wh_json:get_value(<<"From">>, JObj)}
          ,{<<"inception">>, wh_json:get_value(<<"Inception">>, JObj)}
          ,{<<"call_id">>, wh_json:get_value(<<"Call-ID">>, JObj)}
-         ,{<<"other_leg_call_id">>, wh_json:get_value(<<"Other-Leg-Call-ID">>, JObj)}
+         ,{<<"other_leg_call_id">>, OtherLegCallID}
          ,{<<"caller_id_name">>, wh_json:get_value(<<"Caller-ID-Name">>, JObj)}
          ,{<<"caller_id_number">>, wh_json:get_value(<<"Caller-ID-Number">>, JObj)}
          ,{<<"callee_id_name">>, wh_json:get_value(<<"Callee-ID-Name">>, JObj)}
