@@ -1660,7 +1660,6 @@ notify(Url, Method, Key, #state{account_id=AccountId
                 ,{<<"member_call_id">>, whapps_call:call_id(MemberCall)}
                 ,{<<"caller_id_name">>, whapps_call:caller_id_name(MemberCall)}
                 ,{<<"caller_id_number">>, whapps_call:caller_id_number(MemberCall)}
-                ,{<<"other_leg_call_id">>, whapps_call:call_id(MemberCall)}
                 ,{<<"call_state">>, Key}
                 ,{<<"now">>, wh_util:current_tstamp()}
                ])),
