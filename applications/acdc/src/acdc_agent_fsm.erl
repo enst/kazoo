@@ -81,6 +81,7 @@
 
 -define(MAX_FAILURES, whapps_config:get_integer(?CONFIG_CAT, <<"max_connect_failures">>, 3)).
 
+-define(NOTIFY_RINGING, <<"ringing">>).
 -define(NOTIFY_PICKUP, <<"pickup">>).
 -define(NOTIFY_HANGUP, <<"hangup">>).
 -define(NOTIFY_CDR, <<"cdr">>).
@@ -551,21 +552,25 @@ ready({'member_connect_win', JObj}, #state{agent_listener=AgentListener
                 {'ok', UpdatedEPs} ->
                     acdc_agent_listener:bridge_to_member(AgentListener, Call, JObj, UpdatedEPs, CDRUrl, RecordingUrl),
 
-                    CIDName = whapps_call:caller_id_name(Call),
-                    CIDNum = whapps_call:caller_id_number(Call),
-
-                    acdc_agent_stats:agent_connecting(AccountId, AgentId, CallId, CIDName, CIDNum),
-                    lager:info("trying to ring agent endpoints(~p)", [length(UpdatedEPs)]),
-                    lager:debug("notifications for the queue: ~p", [wh_json:get_value(<<"Notifications">>, JObj)]),
-                    {'next_state', 'ringing', State#state{wrapup_timeout=WrapupTimer
+                    Ns = wh_json:get_value(<<"Notifications">>, JObj),
+                    NextState = State#state{wrapup_timeout=WrapupTimer
                                                           ,member_call=Call
                                                           ,member_call_id=CallId
                                                           ,member_call_start=erlang:now()
                                                           ,member_call_queue_id=QueueId
                                                           ,caller_exit_key=CallerExitKey
                                                           ,endpoints=UpdatedEPs
-                                                          ,queue_notifications=wh_json:get_value(<<"Notifications">>, JObj)
-                                                         }}
+                                                          ,queue_notifications=Ns
+                                                         },
+                    maybe_notify(Ns, ?NOTIFY_RINGING, NextState),
+
+                    CIDName = whapps_call:caller_id_name(Call),
+                    CIDNum = whapps_call:caller_id_number(Call),
+
+                    acdc_agent_stats:agent_connecting(AccountId, AgentId, CallId, CIDName, CIDNum),
+                    lager:info("trying to ring agent endpoints(~p)", [length(UpdatedEPs)]),
+                    lager:debug("notifications for the queue: ~p", [Ns]),
+                    {'next_state', 'ringing', NextState}
             end;
         _OtherId ->
             lager:debug("monitoring agent ~s to connect to caller in queue ~s", [AgentId, QueueId]),
