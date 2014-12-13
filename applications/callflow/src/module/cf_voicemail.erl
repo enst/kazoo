@@ -296,7 +296,9 @@ compose_voicemail(#mailbox{max_message_count=MaxCount
                            ,message_count=Count
                            ,mailbox_id=VMBId
                            ,mailbox_number=VMBN
-                          }, _, Call) when Count >= MaxCount andalso MaxCount > 0 ->
+                           ,keys=#keys{login=Login}
+                          }=Box, _, Call) when Count >= MaxCount
+                                               andalso MaxCount > 0 ->
     lager:debug("voicemail box is full, cannot hold more messages, sending notification"),
     Props = [{<<"Account-DB">>, whapps_call:account_db(Call)}
             ,{<<"Voicemail-Box">>, VMBId}
@@ -309,8 +311,16 @@ compose_voicemail(#mailbox{max_message_count=MaxCount
                                       ,fun wapi_notifications:publish_voicemail_full/1
                                       ,fun wapi_notifications:voicemail_full_v/1
                                      ),
-    _ = whapps_call_command:b_prompt(<<"vm-mailbox_full">>, Call),
-    'ok';
+    _ = whapps_call_command:prompt(<<"vm-mailbox_full">>, Call),
+    _NoopId = whapps_call_command:noop(Call),
+
+    case whapps_call_command:wait_for_application_or_dtmf(<<"noop">>, 5 * ?MILLISECONDS_IN_MINUTE) of
+        {'dtmf', Login} ->
+            lager:info("caller wishes to login to mailbox"),
+            check_mailbox(Box, Call);
+        _Else ->
+            lager:debug("finished with call")
+    end;
 compose_voicemail(#mailbox{keys=#keys{login=Login
                                       ,operator=Operator
                                      }
@@ -1184,7 +1194,7 @@ get_mailbox_profile(Data, Call) ->
     Id = wh_json:get_value(<<"id">>, Data),
     AccountDb = whapps_call:account_db(Call),
 
-    case get_mailbox_doc(AccountDb, Id, whapps_call:kvs_fetch('cf_capture_group', Call), Call) of
+    case get_mailbox_doc(AccountDb, Id, Data, Call) of
         {'ok', JObj} ->
             MailboxId = wh_json:get_value(<<"_id">>, JObj),
             lager:info("loaded voicemail box ~s", [MailboxId]),
@@ -1312,10 +1322,11 @@ populate_keys(Call) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec get_mailbox_doc(ne_binary(), api_binary(), api_binary(), whapps_call:call()) ->
+-spec get_mailbox_doc(ne_binary(), api_binary(), wh_json:object(), whapps_call:call()) ->
                              {'ok', wh_json:object()} |
                              {'error', term()}.
-get_mailbox_doc(Db, Id, CaptureGroup, Call) ->
+get_mailbox_doc(Db, Id, Data, Call) ->
+    CaptureGroup = whapps_call:kvs_fetch('cf_capture_group', Call),
     CGIsEmpty = wh_util:is_empty(CaptureGroup),
     case wh_util:is_empty(Id) of
         'false' ->
@@ -1330,56 +1341,76 @@ get_mailbox_doc(Db, Id, CaptureGroup, Call) ->
                 Else -> Else
             end;
         'true' ->
-            get_user_mailbox_doc(Call)
+            get_user_mailbox_doc(Data, Call)
     end.
 
--spec get_user_mailbox_doc(whapps_call:call()) ->
+-spec get_user_mailbox_doc(wh_json:object(), whapps_call:call()) ->
                                   {'ok', wh_json:object()} |
                                   {'error', _}.
--spec get_user_mailbox_doc(whapps_call:call(), api_binary()) ->
+-spec get_user_mailbox_doc(wh_json:object(), whapps_call:call(), api_binary()) ->
                                   {'ok', wh_json:object()} |
                                   {'error', _}.
-get_user_mailbox_doc(Call) ->
-    get_user_mailbox_doc(Call, whapps_call:owner_id(Call)).
-get_user_mailbox_doc(Call, 'undefined') ->
+get_user_mailbox_doc(Data, Call) ->
+    get_user_mailbox_doc(Data, Call, whapps_call:owner_id(Call)).
+
+get_user_mailbox_doc(Data, Call, 'undefined') ->
     DeviceId = whapps_call:authorizing_id(Call),
     case couch_mgr:open_cache_doc(whapps_call:account_db(Call), DeviceId) of
         {'ok', DeviceJObj} ->
             case wh_json:get_value(<<"owner_id">>, DeviceJObj) of
                 'undefined' ->
-                    {'error', "ID and capture group is empty, what voicemail box do you want?"};
+                    lager:debug("device used to check voicemail has no owner assigned", []),
+                    {'error', "request voicemail box number"};
                 OwnerId ->
-                    get_user_mailbox_doc(Call, OwnerId)
+                    get_user_mailbox_doc(Data, Call, OwnerId)
             end;
         {'error', _} ->
-            {'error', "ID and capture group is empty, what voicemail box do you want?"}
+            lager:debug("unknown device used to check voicemail", []),
+            {'error', "request voicemail box number"}
     end;
-get_user_mailbox_doc(Call, OwnerId) ->
+get_user_mailbox_doc(Data, Call, OwnerId) ->
+    SingleMailboxLogin = wh_json:is_true(<<"single_mailbox_login">>, Data, 'false'),
     case cf_attributes:owned_by_docs(OwnerId, <<"vmbox">>, Call) of
         [] ->
             lager:debug("owner ~s has no vmboxes", [OwnerId]),
-            {'error', "ID and capture group is empty, what voicemail box do you want?"};
-        [Box] ->
-            lager:debug("owner ~s has one vmbox: ~s", [OwnerId, wh_json:get_value(<<"id">>, Box)]),
+            {'error', "request voicemail box number"};
+        [Box] when SingleMailboxLogin ->
+            lager:debug("owner ~s has one vmbox ~s, and single mailbox login is enabled"
+                       ,[OwnerId, wh_json:get_value(<<"id">>, Box)]
+                       ),
             {'ok', Box};
-        [_|_]=Boxes ->
-            lager:debug("owner ~s has multiple vmboxes, searching", [OwnerId]),
-            get_user_mailbox(whapps_call:caller_id_number(Call), Boxes)
+        Boxes ->
+            lager:debug("found ~p vmboxes assigned to owner ~s",
+                        [length(Boxes), OwnerId]),
+            maybe_match_callerid(Boxes,Data, Call)
     end.
 
--spec get_user_mailbox(ne_binary(), wh_json:objects()) ->
-                              {'ok', wh_json:object()} |
-                              {'error', _}.
-get_user_mailbox(_CallerId, []) ->
-    lager:debug("failed to find vm box named ~s", [_CallerId]),
-    {'error', "ID and capture group is empty, what voicemail box do you want?"};
-get_user_mailbox(CallerId, [Box|Boxes]) ->
+-spec maybe_match_callerid(wh_json:objects(), wh_json:object(), whapps_call:call()) ->
+                                  {'ok', wh_json:object()} |
+                                  {'error', _}.
+maybe_match_callerid(Boxes, Data, Call) ->
+    case wh_json:is_true(<<"callerid_match_login">>, Data, 'false') of
+        'false' ->
+            lager:debug("found voicemail boxes but caller-id match disabled", []),
+            {'error', "request voicemail box number"};
+        'true' ->
+            CallerId = whapps_call:caller_id_number(Call),
+            try_match_callerid(Boxes, CallerId)
+    end.
+
+-spec try_match_callerid(wh_json:objects(), ne_binary()) ->
+                                {'ok', wh_json:object()} |
+                                {'error', _}.
+try_match_callerid([], _CallerId) ->
+    lager:debug("no voicemail box found for owner with matching caller id ~s", [_CallerId]),
+    {'error', "request voicemail box number"};
+try_match_callerid([Box|Boxes], CallerId) ->
     case wh_json:get_value(<<"mailbox">>, Box) of
         CallerId ->
             lager:debug("found mailbox from caller id ~s", [CallerId]),
             {'ok', Box};
         _Mailbox ->
-            get_user_mailbox(CallerId, Boxes)
+            try_match_callerid(Boxes, CallerId)
     end.
 
 %%--------------------------------------------------------------------
